@@ -41,10 +41,11 @@ static inline LV2_Worker_Schedule* new_worker_schedule(LV2_Worker_Schedule_Handl
 */
 import "C"
 import (
-	"encoding/json"
 	"fmt"
 	"runtime"
 	"unsafe"
+
+	_ "github.com/ianlancetaylor/cgosymbolizer"
 )
 
 type World struct {
@@ -192,17 +193,23 @@ func (p *Plugin) Instantiate(sampleRate float64, features []LV2Feature) *Instanc
 		return nil
 	}
 
-	lv2Features := make([]*C.LV2_Feature, len(features))
+	lv2Features := make([]*C.LV2_Feature, 0)
 
+	pins := make([]runtime.Pinner, 0)
 	for i, f := range features {
-		var pin runtime.Pinner
+		var p runtime.Pinner
+		pins = append(pins, p)
 		var feature C.LV2_Feature
 		feature.URI = C.CString(f.URI)
 		feature.data = f.Data()
-		lv2Features[i] = &feature
-		pin.Pin(lv2Features[i])
-		defer pin.Unpin()
+		lv2Features = append(lv2Features, &feature)
+		p.Pin(lv2Features[i])
 	}
+	defer func() {
+		for _, p := range pins {
+			p.Unpin()
+		}
+	}()
 
 	instance := C.lilv_plugin_instantiate(p.plugin, (C.double)(sampleRate), (**C.LV2_Feature)(unsafe.Pointer(unsafe.SliceData(lv2Features))))
 	if instance == nil {
@@ -259,14 +266,19 @@ func (f LV2Feature) Data() unsafe.Pointer {
 	return nil
 }
 
+var uridMap = make(map[string]uint32)
+
 //export go_urid_map
 func go_urid_map(p unsafe.Pointer, p1 *C.char) C.int {
-	feature := (*LV2Feature)(p)
-	var data map[string]uint32
-	json.Unmarshal([]byte(feature.data), &data)
+	//feature := (*LV2Feature)(p)
 	str := C.GoString(p1)
-	fmt.Printf("go_map_urid: %s - data: %s\n", str, feature.data)
-	id := data[str]
+	var id uint32
+	var ok bool
+	if id, ok = uridMap[str]; !ok {
+		id = uint32(len(uridMap)) + 1
+		uridMap[str] = id
+	}
+	fmt.Printf("go_map_urid: %s - id: %d\n", str, id)
 	return (C.int)(id)
 }
 

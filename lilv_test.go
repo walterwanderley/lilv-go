@@ -2,6 +2,7 @@ package lilv_test
 
 import (
 	"testing"
+	"unsafe"
 
 	"github.com/walterwanderley/lilv-go"
 )
@@ -34,10 +35,20 @@ func TestNewWorld(t *testing.T) {
 	plugin := plugins.GetByURI("http://github.com/mikeoliphant/neural-amp-modeler-lv2")
 	t.Logf("plugin: %v", plugin)
 
-	instance := plugin.Instantiate(48000.0, []lilv.LV2Feature{
-		lilv.NewLV2Feature("http://lv2plug.in/ns/ext/urid#map", `{"Float": 3}`),
-		//lilv.NewLV2Feature("http://lv2plug.in/ns/ext/worker#schedule", `bhb`),
+	instance := plugin.Instantiate(44100.0, []lilv.LV2Feature{
+		lilv.NewLV2Feature("http://lv2plug.in/ns/ext/urid#map", ``),
+		lilv.NewLV2Feature("http://lv2plug.in/ns/ext/worker#schedule", `bhsasb`),
 	})
 
 	t.Logf("Intance: %#v", instance)
+
+	x := 50.2
+	y := 60.3
+	instance.ConnectPort(0, unsafe.Pointer(&x))
+	instance.ConnectPort(1, unsafe.Pointer(&y))
+	instance.ConnectPort(3, unsafe.Pointer(&y))
+	instance.Activate()
+	instance.Run(128)
+	instance.Deactivate()
+	instance.Free()
 }
