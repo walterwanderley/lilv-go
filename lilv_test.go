@@ -34,10 +34,9 @@ func TestNewWorld(t *testing.T) {
 	plugin := plugins.GetByURI("http://github.com/mikeoliphant/neural-amp-modeler-lv2")
 	t.Logf("plugin: %v", plugin)
 
-	instance := plugin.Instantiate(48000.0, []*lilv.LV2Feature{
-		{
-			URI: "http://lv2plug.in/ns/ext/urid#map",
-		},
+	instance := plugin.Instantiate(48000.0, []lilv.LV2Feature{
+		lilv.NewLV2Feature("http://lv2plug.in/ns/ext/urid#map", `{"Float": 3}`),
+		//lilv.NewLV2Feature("http://lv2plug.in/ns/ext/worker#schedule", `bhb`),
 	})
 
 	t.Logf("Intance: %#v", instance)

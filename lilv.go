@@ -4,12 +4,46 @@ package lilv
 #cgo CFLAGS: -I${SRCDIR}/include
 #cgo LDFLAGS: -L${SRCDIR}/libs -l:liblilv-0.so
 
+#include <stdlib.h>
+#include <lv2/atom/atom.h>
 #include <lv2/core/lv2.h>
 #include <lv2/urid/urid.h>
+#include <lv2/worker/worker.h>
 #include <lilv/lilv.h>
+
+extern int go_urid_map(void*, char*);
+
+extern int go_schedule_work(void*, uint32_t, void*);
+
+static inline LV2_URID map_uri(LV2_URID_Map_Handle handle, const char * uri) {
+	const LV2_URID id = go_urid_map(handle, (char*)uri);
+	return id;
+}
+
+static inline LV2_URID_Map* new_urid_map(LV2_URID_Map_Handle handle) {
+	LV2_URID_Map* self = malloc(sizeof(LV2_URID_Map));
+	self->handle = handle;
+	self->map =  map_uri;
+	return self;
+}
+
+static inline LV2_Worker_Status schedule_work(LV2_Worker_Schedule_Handle handle, uint32_t size, const void* data) {
+	const LV2_Worker_Status status = go_schedule_work(handle, size, (void*)data);
+	return status;
+}
+
+static inline LV2_Worker_Schedule* new_worker_schedule(LV2_Worker_Schedule_Handle handle) {
+	LV2_Worker_Schedule* self = malloc(sizeof(LV2_Worker_Schedule));
+	self->handle = handle;
+	self->schedule_work = schedule_work;
+	return self;
+}
 */
 import "C"
 import (
+	"encoding/json"
+	"fmt"
+	"runtime"
 	"unsafe"
 )
 
@@ -21,6 +55,10 @@ func NewWorld() *World {
 	return &World{
 		world: C.lilv_world_new(),
 	}
+}
+
+func (w *World) Free() {
+	C.lilv_world_free(w.world)
 }
 
 func (w *World) SetLv2Path(path string) {
@@ -109,7 +147,6 @@ func (w *World) GetAllPlugins() *Plugins {
 		plugins: (*C.LilvPlugins)(unsafe.Pointer(plugins)),
 		world:   w,
 	}
-
 }
 
 type Node struct {
@@ -150,17 +187,29 @@ type Plugin struct {
 	plugin *C.LilvPlugin
 }
 
-func (p *Plugin) Instantiate(sampleRate float64, features []*LV2Feature) *Instance {
+func (p *Plugin) Instantiate(sampleRate float64, features []LV2Feature) *Instance {
 	if p.plugin == nil {
 		return nil
 	}
-	//FIXME add features
-	instance := C.lilv_plugin_instantiate((*C.LilvPlugin)(unsafe.Pointer(p.plugin)), (C.double)(sampleRate), nil)
+
+	lv2Features := make([]*C.LV2_Feature, len(features))
+
+	for i, f := range features {
+		var pin runtime.Pinner
+		var feature C.LV2_Feature
+		feature.URI = C.CString(f.URI)
+		feature.data = f.Data()
+		lv2Features[i] = &feature
+		pin.Pin(lv2Features[i])
+		defer pin.Unpin()
+	}
+
+	instance := C.lilv_plugin_instantiate(p.plugin, (C.double)(sampleRate), (**C.LV2_Feature)(unsafe.Pointer(unsafe.SliceData(lv2Features))))
 	if instance == nil {
 		return nil
 	}
 	return &Instance{
-		instance: (*C.LilvInstance)(unsafe.Pointer(instance)),
+		instance: instance,
 	}
 }
 
@@ -169,26 +218,61 @@ type Instance struct {
 }
 
 func (i *Instance) ConnectPort(index int, data unsafe.Pointer) {
-	C.lilv_instance_connect_port((*C.LilvInstance)(unsafe.Pointer(i.instance)), C.uint(index), data)
+	C.lilv_instance_connect_port(i.instance, C.uint(index), data)
 }
 
 func (i *Instance) Activate() {
-	C.lilv_instance_activate((*C.LilvInstance)(unsafe.Pointer(i.instance)))
+	C.lilv_instance_activate(i.instance)
 }
 
 func (i *Instance) Run(sampleCount uint) {
-	C.lilv_instance_run((*C.LilvInstance)(unsafe.Pointer(i.instance)), (C.uint)(sampleCount))
+	C.lilv_instance_run(i.instance, (C.uint)(sampleCount))
 }
 
 func (i *Instance) Deactivate() {
-	C.lilv_instance_deactivate((*C.LilvInstance)(unsafe.Pointer(i.instance)))
+	C.lilv_instance_deactivate(i.instance)
 }
 
 func (i *Instance) Free() {
-	C.lilv_instance_free((*C.LilvInstance)(unsafe.Pointer(i.instance)))
+	C.lilv_instance_free((i.instance))
 }
 
 type LV2Feature struct {
 	URI  string
-	Data unsafe.Pointer
+	data string
+}
+
+func NewLV2Feature(URI string, dataJSON string) LV2Feature {
+	return LV2Feature{
+		URI:  URI,
+		data: dataJSON,
+	}
+}
+
+func (f LV2Feature) Data() unsafe.Pointer {
+	switch f.URI {
+	case "http://lv2plug.in/ns/ext/urid#map":
+		return unsafe.Pointer(C.new_urid_map((C.LV2_URID_Map_Handle)(unsafe.Pointer(&f))))
+	case "http://lv2plug.in/ns/ext/worker#schedule":
+		return unsafe.Pointer(C.new_worker_schedule((C.LV2_Worker_Schedule_Handle)(unsafe.Pointer(&f))))
+	}
+	return nil
+}
+
+//export go_urid_map
+func go_urid_map(p unsafe.Pointer, p1 *C.char) C.int {
+	feature := (*LV2Feature)(p)
+	var data map[string]uint32
+	json.Unmarshal([]byte(feature.data), &data)
+	str := C.GoString(p1)
+	fmt.Printf("go_map_urid: %s - data: %s\n", str, feature.data)
+	id := data[str]
+	return (C.int)(id)
+}
+
+//export go_schedule_work
+func go_schedule_work(p unsafe.Pointer, size uint32, data unsafe.Pointer) C.int {
+	//feature := (*LV2Feature)(p)
+	fmt.Printf("go_schedule_work: size: %v\n", size)
+	return 0
 }

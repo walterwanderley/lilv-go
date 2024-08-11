@@ -1,5 +1,5 @@
 # lilv-go
-lilvn go bindings
+[lilv](https://github.com/lv2/lilv) go bindings
 
 
 ## WIP
