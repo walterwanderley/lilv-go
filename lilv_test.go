@@ -1,9 +1,12 @@
 package lilv_test
 
 import (
+	"fmt"
+	"os"
 	"testing"
 	"unsafe"
 
+	"github.com/go-audio/wav"
 	"github.com/walterwanderley/lilv-go"
 )
 
@@ -41,14 +44,44 @@ func TestNewWorld(t *testing.T) {
 	})
 
 	t.Logf("Intance: %#v", instance)
+	/*
+		inputAudio, err := os.ReadFile("testdata/test.wav")
+		if err != nil {
+			t.Error(err)
 
-	x := 50.2
-	y := 60.3
-	instance.ConnectPort(0, unsafe.Pointer(&x))
-	instance.ConnectPort(1, unsafe.Pointer(&y))
-	instance.ConnectPort(3, unsafe.Pointer(&y))
+			return
+		}
+	*/
+	f, err := os.Open("/tmp/sinco.wav")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	dec := wav.NewDecoder(f)
+	dec.ReadMetadata()
+	t.Logf("metadata: %+v", dec.Metadata)
+
+	inNode := w.NewFileURI("testdata/test.wav")
+
+	//TODO aprender como configurar esses controls
+	//TODO aprender como chamar o Set ou Patch do LV2 para configurar o model nam patch:writable <@NAM_LV2_ID@#model>;
+	control := 56.0
+	notify := 0.0
+	outputAudio := make([]byte, 512)
+	inputLevel := 10.0
+	outputLevel := 4.0
+	instance.PatchSet("http://github.com/mikeoliphant/neural-amp-modeler-lv2#model", "testdata/test.nam")
+	instance.ConnectPort(0, unsafe.Pointer(&control))
+	instance.ConnectPort(1, unsafe.Pointer(&notify))
+	instance.ConnectPort(2, unsafe.Pointer(inNode.Get()))
+	instance.ConnectPort(3, unsafe.Pointer(&outputAudio[0]))
+	instance.ConnectPort(4, unsafe.Pointer(&inputLevel))
+	instance.ConnectPort(5, unsafe.Pointer(&outputLevel))
 	instance.Activate()
-	instance.Run(128)
+	instance.Run(512)
+	fmt.Printf("out %v", outputAudio)
 	instance.Deactivate()
 	instance.Free()
+	w.Free()
+
 }

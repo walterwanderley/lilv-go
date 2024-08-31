@@ -6,6 +6,8 @@ package lilv
 
 #include <stdlib.h>
 #include <lv2/atom/atom.h>
+#include <lv2/atom/forge.h>
+#include <lv2/atom/util.h>
 #include <lv2/core/lv2.h>
 #include <lv2/urid/urid.h>
 #include <lv2/worker/worker.h>
@@ -65,6 +67,13 @@ func (w *World) Free() {
 func (w *World) SetLv2Path(path string) {
 	lv2Path := C.lilv_new_file_uri(w.world, nil, C.CString(path))
 	C.lilv_world_set_option(w.world, C.CString(C.LILV_OPTION_LV2_PATH), lv2Path)
+}
+
+func (w *World) NewFileURI(path string) *Node {
+	node := C.lilv_new_file_uri(w.world, nil, C.CString(path))
+	return &Node{
+		node: node,
+	}
 }
 
 func (w *World) LoadAll() {
@@ -154,6 +163,10 @@ type Node struct {
 	node *C.LilvNode
 }
 
+func (n *Node) Get() *C.LilvNode {
+	return n.node
+}
+
 type Nodes struct {
 	nodes *C.LilvNodes
 }
@@ -180,12 +193,22 @@ func (p *Plugins) GetByURI(uri string) *Plugin {
 		return nil
 	}
 	return &Plugin{
-		plugin: (*C.LilvPlugin)(unsafe.Pointer(plugin)),
+		plugin: plugin,
 	}
 }
 
 type Plugin struct {
 	plugin *C.LilvPlugin
+}
+
+func (p *Plugin) PortByIndex(i int) *Port {
+	port := C.lilv_plugin_get_port_by_index(p.plugin, C.uint(i))
+	if port != nil {
+		return nil
+	}
+	return &Port{
+		port: port,
+	}
 }
 
 func (p *Plugin) Instantiate(sampleRate float64, features []LV2Feature) *Instance {
@@ -194,38 +217,75 @@ func (p *Plugin) Instantiate(sampleRate float64, features []LV2Feature) *Instanc
 	}
 
 	lv2Features := make([]*C.LV2_Feature, 0)
-
-	pins := make([]runtime.Pinner, 0)
-	for i, f := range features {
+	pinners := make([]runtime.Pinner, 0)
+	var uridMap *C.LV2_URID_Map
+	for _, f := range features {
 		var p runtime.Pinner
-		pins = append(pins, p)
 		var feature C.LV2_Feature
 		feature.URI = C.CString(f.URI)
-		feature.data = f.Data()
-		lv2Features = append(lv2Features, &feature)
-		p.Pin(lv2Features[i])
-	}
-	defer func() {
-		for _, p := range pins {
-			p.Unpin()
+		data := f.Data()
+		feature.data = data
+		if f.URI == "http://lv2plug.in/ns/ext/urid#map" {
+			uridMap = (*C.LV2_URID_Map)(data)
 		}
-	}()
+		lv2Features = append(lv2Features, &feature)
+		p.Pin(&feature)
+		pinners = append(pinners, p)
+	}
 
+	/*
+		defer func() {
+			for _, p := range pins {
+				p.Unpin()
+			}
+		}()
+	*/
 	instance := C.lilv_plugin_instantiate(p.plugin, (C.double)(sampleRate), (**C.LV2_Feature)(unsafe.Pointer(unsafe.SliceData(lv2Features))))
 	if instance == nil {
 		return nil
 	}
-	return &Instance{
+	i := Instance{
 		instance: instance,
+		features: lv2Features,
+		pinners:  pinners,
 	}
+	var forge C.LV2_Atom_Forge
+	if uridMap != nil {
+		C.lv2_atom_forge_init((*C.LV2_Atom_Forge)(unsafe.Pointer(&forge)), uridMap)
+		i.forge = &forge
+	}
+	return &i
+}
+
+type Port struct {
+	port *C.LilvPort
 }
 
 type Instance struct {
 	instance *C.LilvInstance
+	forge    *C.LV2_Atom_Forge
+	features []*C.LV2_Feature
+	pinners  []runtime.Pinner
 }
 
 func (i *Instance) ConnectPort(index int, data unsafe.Pointer) {
 	C.lilv_instance_connect_port(i.instance, C.uint(index), data)
+}
+
+func (i *Instance) PatchSet(key string, value string) {
+	uridPatchSet := uridMap["http://lv2plug.in/ns/ext/patch#Set"]
+	uridPatchProperty := uridMap["http://lv2plug.in/ns/ext/patch#property"]
+	uridPatchValue := uridMap["http://lv2plug.in/ns/ext/patch#value"]
+	uridKey := uridMap[key]
+	var frame C.LV2_Atom_Forge_Frame
+	set := C.lv2_atom_forge_object(i.forge, &frame, 0, C.uint(uridPatchSet))
+	var _ = set
+	C.lv2_atom_forge_key(i.forge, C.uint(uridPatchProperty))
+	C.lv2_atom_forge_urid(i.forge, C.uint(uridKey))
+	C.lv2_atom_forge_key(i.forge, C.uint(uridPatchValue))
+	C.lv2_atom_forge_path(i.forge, C.CString(value), C.uint(len(value)))
+
+	C.lv2_atom_forge_pop(i.forge, &frame)
 }
 
 func (i *Instance) Activate() {
@@ -242,6 +302,9 @@ func (i *Instance) Deactivate() {
 
 func (i *Instance) Free() {
 	C.lilv_instance_free((i.instance))
+	for _, p := range i.pinners {
+		p.Unpin()
+	}
 }
 
 type LV2Feature struct {
